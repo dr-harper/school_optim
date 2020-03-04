@@ -1,0 +1,282 @@
+---
+title: "School Optimisation Analysis Discussion"
+output:
+  xaringan::moon_reader:
+    lib_dir: libs
+    css: xaringan-themer.css
+    chakra: libs/remark-latest.min.js
+    nature:
+      highlightStyle: github
+      highlightLines: true
+      countIncrementalSlides: false
+params:
+  state:
+    choices: !r yaml::yaml.load_file(here::here("04_StateReports/stateNames.yaml"))
+    input: select
+    label: State
+    value: Federal Capital Territory     
+---
+
+```{r xaringan-themer, include = FALSE}
+library(xaringanthemer)
+mono_light(
+  base_color = "#2D3E50",
+  header_font_google = google_font("Josefin Sans"),
+  text_font_google   = google_font("Montserrat", "300", "300i"),
+  code_font_google   = google_font("Droid Mono"),
+  header_h1_font_size = "30px"
+)
+```
+
+```{r setup, include=FALSE}
+options(htmltools.dir.version = FALSE)
+
+# Set the options for the R Markdown Report
+knitr::opts_chunk$set(echo=FALSE,
+                      message = FALSE,
+                      out.width = "100%",
+                      fig.align = "center",
+                      warning = FALSE,
+                      screenshot.opts = list(vwidth = 1920, vheight = 1080))
+
+# Load packages
+library(leaflet)
+library(raster)
+library(sf)
+library(tidyverse)
+library(tmap)
+library(here)
+
+# Sets whether maps are plotted interactively or static
+# Defined in report parameters
+tmap_mode("view")
+tmap_options(basemaps = c("Esri.WorldGrayCanvas", "Esri.WorldStreetMap", "Esri.WorldTopoMap", "Esri.WorldImagery", "Esri.WorldShadedRelief"))
+
+# Define coordinate systems used within analysis
+crs_geo <- 4326 # WGS84 geocentric system for displaying maps
+crs_local <- 26331  # Minna Datum  used functions which compute distance between locations (i.e. geometric buffers)
+crs_local <- 32632
+
+# ---- Functions
+
+#' Crops a raster to a local state
+#'
+cropToState <- function(raster, outline){
+  
+  raster %>%
+    raster::crop(outline) %>%
+    raster::mask(outline)
+}
+```
+
+class: center, middle
+
+# Disclaimer
+
+<img src="https://cdn2.iconfinder.com/data/icons/freecns-cumulus/32/519791-101_Warning-512.png" alt="my caption" style="width: 200px;"/>
+
+
+**WARNING: what I about to present is not the "tool" itself. These are designed to support decision making**
+
+- Based on this discussion we can look at how the final tool could be delivered.
+- Interactive maps used to facilitate discussion about the data layers available
+
+---
+
+# State Level Indicators
+
+At a state level, what the are key indicators that you need to know?
+
+- Coverage statistics?
+- Number of schools needed?
+
+---
+
+# School Data
+
+```{r loadData}
+# Load boundary data and select the single state
+# Using GADM boundaries although may wish to update for GRID3 dataset
+boundaries <- 
+  here("../data/processed/boundaries/nigeriaAdmin2.shp") %>%
+  sf::read_sf() %>%
+  filter(NAME_1 == params$state)
+
+# Local projects
+boundaries_trans <-
+  boundaries %>%
+  sf::st_transform(crs = crs_local)
+
+# Convert boundaries to sp object for use as cropping raster
+boundaries_sp <- as(object = boundaries_trans, "Spatial")
+
+# TODO: Currently only relates to Kaduna state. Do we have school data for all states
+schools_current <- 
+  here("../data/processed/schools/existingSchools.csv") %>%
+  read_csv() %>%
+  st_as_sf(coords = c("LONGITUDE", "LATITUDE"), crs = crs_geo) %>%
+  filter(NAME_1 == params$state)
+```
+
+```{r existingSchools, fig.cap = "Existing school locations"}
+tm_basemap() +
+  tm_shape(boundaries) +
+  tm_polygons(alpha = 0.4) +
+  tm_shape(schools_current) +
+  tm_dots(col = "category",title = "School Categories", palette = c("green", "red", "dodgerblue")) +
+  tm_shape(boundaries) +
+  tm_text("NAME_2", clustering = FALSE, size = 0.5)
+```
+
+
+---
+
+# School Map
+
+```{r schoolPopulationComparison, fig.cap = "Population overlaid with the School locations"}
+
+# Uses GRID3 dataset. Make sure we are using most up-to-date
+pop_state <- 
+  here("../data/in/National_Indicators//m_f_5_9.tif") %>%
+  raster::raster() %>%
+  cropToState(boundaries)
+
+tm_shape(pop_state) +
+  tm_raster(palette = "Reds", title = "Population Count (5 to 9 year olds)") +
+  tm_shape(schools_current) +
+  tm_dots(col = "category",title = "School Categories", palette = c("green", "red", "dodgerblue")) +
+  tm_shape(boundaries) +
+  tm_polygons(border.col = "grey70", alpha = 0)
+```
+
+---
+
+# School Catchment Areas
+
+We can visualise regions which are greater than 2km from a public school.
+
+```{r coverageStats, fig.cap="Coverage of population"}
+# Load the raster
+coverage_state <- 
+  here("../data/in/National_Indicators/covpop2km_0schoolsadded.tif") %>%
+  raster()  %>%
+  cropToState(boundaries_sp)
+
+# Display the results
+tm_shape(coverage_state) +
+  tm_raster(palette = "Reds", title = "Population Count", n = 10) +
+  tm_shape(boundaries_trans) +
+  tm_polygons(border.col = "grey70", alpha = 0)
+```
+
+---
+
+# Distance to schools
+
+```{r distanceToSchool, fig.cap = "Distance to schools"}
+# Load the raster
+distance_state <- 
+  here("../data/in/National_Indicators/dist2schools_0schoolsadded.tif") %>%
+  raster() %>%
+  cropToState(boundaries_trans)
+
+# Convert boundaries to sp object for use as cropping raster
+boundaries_sp <- as(object = boundaries_trans, "Spatial")
+
+# Display results
+tm_shape(boundaries_trans) +
+  tm_polygons(border.col = "grey70", alpha = 0) +
+  tm_shape(distance_state) +
+  tm_raster(palette = c("green", "yellow", "red"),
+            title = "Distance to Schools",
+            breaks = c(0,2,5,10), alpha = 0.5) +
+  tm_shape(schools_current) +
+  tm_dots(col = "grey", size = 0.005)
+```
+
+---
+
+# Teacher Density
+
+```{r teacherDensity, fig.cap = "Teacher Density"}
+teacher_density_state <- 
+  here("../data/in/National_Indicators/teacherdensity2km.tif") %>%
+  raster() %>%
+  cropToState(boundaries_sp)
+
+# raster::writeRaster(x = teacher_density_state, filename = "../../data/app/rasterExamples/teacher_density_state.tif")
+
+# Display results
+tm_shape(teacher_density_state) +
+  tm_raster(palette = "Purples", title = "Teacher Density", n = 10) +
+  tm_shape(boundaries_trans) +
+  tm_polygons(border.col = "grey70", alpha = 0)
+```
+
+
+---
+
+# Population Per Teacher
+
+```{r childrenPerTeacher, fig.cap = "Number of children per teacher"}
+
+pop_per_teacher_state <- 
+  here("../data/in/National_Indicators/popdivteachers2km.tif") %>%
+  raster() %>%
+  cropToState(boundaries_sp)
+
+# raster::writeRaster(x = pop_per_teacher_state, filename = "../../data/app/rasterExamples/pop_per_teacher_state.tif")
+
+# Display results
+tm_shape(pop_per_teacher_state) +
+  tm_raster(palette = "Purples", title = "Population Per Teacher", n = 10) +
+  tm_shape(boundaries_trans) +
+  tm_polygons(border.col = "grey70", alpha = 0)
+```
+
+
+---
+
+# Teachers Needed
+
+
+```{r teachersNeeded, fig.cap = "Teacher Density"}
+teachers_needed_state <- 
+  here("../data/in/National_Indicators/teacherneeded2km.tif") %>%
+  raster() %>%
+  cropToState(boundaries_sp)
+
+# Display results
+tm_shape(teachers_needed_state) +
+  tm_raster(palette = "Reds", title = "Teachers Needed", n = 10, alpha = 0.5) +
+  tm_shape(boundaries_trans) +
+  tm_polygons(border.col = "grey70", alpha = 0)
+```
+
+---
+
+# Placing New Schools
+
+Where does the tool suggest new schools should be placed?
+
+```{r}
+optimisedSchools <- here("../data/processed/schools/newschoolsPrimary.csv") %>%
+  read_csv()  %>%
+  st_as_sf(coords = c("LONGITUDE", "LATITUDE"), crs = crs_geo) %>%
+  filter(NAME_1 == params$state)
+
+schools_current_1 <- schools_current %>% filter(category == "PRIMARY")
+
+tm_shape(pop_state) +
+  tm_raster(palette = "Reds", title = "Population Count (5 to 9 year olds)") +
+  tm_shape(schools_current_1) +
+  tm_dots(col = "category",title = "School Categories", palette = "green") +
+  tm_shape(optimisedSchools) +
+  tm_dots(title = "New Primary Schools") +
+  tm_shape(boundaries) +
+  tm_polygons(border.col = "grey70", alpha = 0)
+
+```
+
+
+
